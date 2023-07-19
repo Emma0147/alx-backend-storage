@@ -3,8 +3,52 @@
 Redis basic.
 """
 from typing import Union, Callable, Optional
+from functools import wraps
 import redis
 import uuid
+
+
+def call_history(method: Callable) -> Callable:
+    """Stores the history of inputs and outputs for a particular function"""
+    method2_key = method.__qualname__
+    inputs, outputs = method2_key + ':inputs', method2_key + ':outputs'
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        self._redis.rpush(inputs, str(args))
+        result = method(self, *args, **kwargs)
+        self._redis.rpush(outputs, str(result))
+        return result
+    return wrapper
+
+
+def count_calls(method: Callable) -> Callable:
+    """
+    Creates and returns function that increments the count
+    for that key every time the method is called and returns
+    the value returned by the original method
+    """
+    method_key = method.__qualname__
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        """Get the qualified name of the method using __qualname__"""
+        self._redis.incr(method_key)
+        return method(self, *args, **kwargs)
+    return wrapper
+
+
+def replay(method: Callable) -> None:
+    """Displays the history of calls of a particular function"""
+    method3_key = method.__qualname__
+    inputs, outputs = method3_key + ':inputs', method3_key + ':outputs'
+    redis = method.__self__._redis
+    method_count = redis.get(method3_key).decode('utf-8')
+    print(f'{method3_key} was called {method_count} times:')
+    IOTuple = zip(redis.lrange(inputs, 0, -1), redis.lrange(outputs, 0, -1))
+    for inp, outp in list(IOTuple):
+        attr, data = inp.decode("utf-8"), outp.decode("utf-8")
+        print(f'{method3_key}(*{attr}) -> {data}')
 
 
 class Cache:
@@ -14,6 +58,8 @@ class Cache:
         self._redis = redis.Redis()
         self._redis.flushdb()
 
+    @call_history
+    @count_calls
     def store(self, data: Union[str, bytes, int, float]) -> str:
         """Takes and stores a data argument and returns a string."""
         key = str(uuid.uuid4())
